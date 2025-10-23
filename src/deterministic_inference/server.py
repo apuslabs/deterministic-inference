@@ -10,6 +10,10 @@ from typing import Optional
 from deterministic_inference.backends.base import Backend
 from deterministic_inference.backends.sglang import SGLangBackend
 from deterministic_inference.config import Config
+from deterministic_inference.environment import (
+    EnvironmentCollectionError,
+    collect_gpu_environment_json,
+)
 from deterministic_inference.logging_config import get_logger
 from deterministic_inference.proxy.handler import OpenAIProxyHandler
 
@@ -30,9 +34,11 @@ class InferenceServer:
         self.http_server: Optional[HTTPServer] = None
         self.server_thread: Optional[threading.Thread] = None
         self._shutdown_event = threading.Event()
+        self.environment_json: Optional[str] = None
         
         # Initialize backend based on configuration
         self._init_backend()
+        self._collect_environment_info()
     
     def _init_backend(self):
         """Initialize the inference backend based on configuration."""
@@ -50,6 +56,18 @@ class InferenceServer:
         # Set backend for the proxy handler
         OpenAIProxyHandler.backend = self.backend
     
+    def _collect_environment_info(self) -> None:
+        """Collect GPU environment information once at startup."""
+        logger.info("Collecting GPU environment information")
+        try:
+            self.environment_json = collect_gpu_environment_json()
+        except EnvironmentCollectionError as exc:
+            logger.error("Failed to collect GPU environment information", exc_info=True)
+            raise
+
+        OpenAIProxyHandler.environment_info = self.environment_json
+        logger.debug("GPU environment payload: %s", self.environment_json)
+
     def start(self) -> bool:
         """Start the inference server.
         
@@ -97,6 +115,9 @@ class InferenceServer:
     def _serve_forever(self):
         """Run HTTP server until shutdown is requested."""
         try:
+            if not self.http_server:
+                logger.error("HTTP server not initialised before serve_forever call")
+                return
             self.http_server.serve_forever()
         except Exception as e:
             if not self._shutdown_event.is_set():

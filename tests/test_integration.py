@@ -1,6 +1,8 @@
 """Integration tests for the inference server using OpenAI SDK."""
 
+import json
 import time
+
 import pytest
 from openai import OpenAI
 
@@ -77,6 +79,7 @@ class TestCompletionsAPI:
         assert len(response.choices) > 0
         assert response.choices[0].text is not None
         assert response.usage is not None
+        _assert_environment_metadata(response)
     
     def test_completion_with_temperature_zero(self, openai_client, server_health_check):
         """Test completion with temperature 0 for deterministic output."""
@@ -90,6 +93,7 @@ class TestCompletionsAPI:
         assert response.id is not None
         assert len(response.choices) > 0
         assert response.choices[0].text is not None
+        _assert_environment_metadata(response)
 
 
 class TestChatCompletionsAPI:
@@ -112,6 +116,7 @@ class TestChatCompletionsAPI:
         assert response.choices[0].message.content is not None
         assert response.choices[0].message.role == "assistant"
         assert response.usage is not None
+        _assert_environment_metadata(response)
     
     def test_chat_completion_deterministic(self, openai_client, server_health_check):
         """Test chat completion with temperature 0 for deterministic output."""
@@ -127,6 +132,7 @@ class TestChatCompletionsAPI:
         assert response.id is not None
         assert len(response.choices) > 0
         assert response.choices[0].message.content is not None
+        _assert_environment_metadata(response)
     
     def test_chat_completion_multiple_messages(self, openai_client, server_health_check):
         """Test chat completion with conversation history."""
@@ -145,6 +151,7 @@ class TestChatCompletionsAPI:
         assert response.id is not None
         assert len(response.choices) > 0
         assert response.choices[0].message.content is not None
+        _assert_environment_metadata(response)
 
 
 class TestErrorHandling:
@@ -172,3 +179,18 @@ def pytest_configure(config):
 
 # Mark all tests in this module as integration tests
 pytestmark = pytest.mark.integration
+
+
+def _assert_environment_metadata(response) -> None:
+    """Assert that environment metadata is present and valid."""
+    payload = response.model_dump()
+    environment_str = payload.get("environment")
+    assert environment_str is not None, "environment metadata missing from response"
+    assert isinstance(environment_str, str), "environment metadata must be a JSON string"
+
+    environment = json.loads(environment_str)
+    for key in ("driver_version", "cuda_version", "gpu_count", "gpus"):
+        assert key in environment, f"environment metadata missing '{key}'"
+
+    assert isinstance(environment["gpu_count"], int)
+    assert isinstance(environment["gpus"], list)

@@ -17,6 +17,7 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
     
     # Class variable to hold the backend instance
     backend: Optional[Backend] = None
+    environment_info: Optional[str] = None
     
     def do_POST(self):
         """Handle POST requests - proxy to backend OpenAI-compatible endpoint."""
@@ -67,22 +68,32 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
             
             # Forward request to backend
             with urllib.request.urlopen(req, timeout=300) as response:
-                # Send response back to client
-                self.send_response(response.getcode())
-                
-                # Copy headers from backend response
-                for header, value in response.headers.items():
-                    if header.lower() not in ['connection', 'transfer-encoding']:
-                        self.send_header(header, value)
+                status_code = response.getcode()
+                response_headers = response.headers
+                body = response.read()
+
+                should_inject = self._should_inject_environment()
+                if should_inject:
+                    body = self._inject_environment_payload(
+                        body,
+                        response_headers.get("Content-Type", ""),
+                    )
+
+                self.send_response(status_code)
+
+                for header, value in response_headers.items():
+                    header_lower = header.lower()
+                    if header_lower in ["connection", "transfer-encoding", "content-length"]:
+                        continue
+                    if header_lower == "content-encoding" and should_inject:
+                        # Payload has been re-encoded; drop stale encoding header
+                        continue
+                    self.send_header(header, value)
+
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                
-                # Stream response body
-                while True:
-                    chunk = response.read(8192)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                
+                self.wfile.write(body)
+
                 logger.info(f"Successfully proxied request to {self.path}")
         
         except urllib.error.HTTPError as e:
@@ -164,3 +175,27 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
         """Override to suppress default HTTP request logging."""
         # We handle logging via our own logger
         pass
+
+    def _should_inject_environment(self) -> bool:
+        """Determine whether the response should include environment metadata."""
+        if not self.environment_info:
+            return False
+        return self.path.startswith("/v1/completions") or self.path.startswith("/v1/chat/completions")
+
+    def _inject_environment_payload(self, body: bytes, content_type: str) -> bytes:
+        """Inject environment metadata into JSON response bodies."""
+        if "application/json" not in content_type.lower():
+            logger.warning(
+                "Skipping environment injection due to unsupported content type: %s",
+                content_type,
+            )
+            return body
+
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.error("Failed to decode backend response for environment injection: %s", exc)
+            return body
+
+        payload["environment"] = self.environment_info
+        return json.dumps(payload).encode("utf-8")
