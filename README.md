@@ -15,6 +15,7 @@ This project provides a production-ready inference server that:
 
 - ✅ **OpenAI API Compatibility**: Drop-in replacement for OpenAI API endpoints
 - ✅ **SGLang Backend**: Full support for SGLang inference framework
+- ✅ **GPU Environment Tracking**: Automatic GPU info collection (model, memory, driver, CUDA version) in every response
 - ✅ **Extensible Architecture**: Abstract backend interface for easy additions
 - ✅ **Structured Logging**: Configurable logging to console and/or file
 - ✅ **Configuration Flexibility**: CLI args, environment variables, or defaults
@@ -32,22 +33,13 @@ git clone https://github.com/apuslabs/deterministic-inference.git
 cd deterministic-inference
 
 # Install with uv
-uv sync
+uv sync --prerelease=allow
 
 # Or install in development mode
 uv pip install -e .
 
 # Install with test dependencies
 uv pip install -e ".[test]"
-```
-
-### Using pip
-
-```bash
-pip install -e .
-
-# With test dependencies
-pip install -e ".[test]"
 ```
 
 ## Quick Start
@@ -57,13 +49,13 @@ pip install -e ".[test]"
 Using the installed command:
 
 ```bash
-deterministic-inference-server --model-path /path/to/model
+deterministic-inference-server --model-path qwen/qwen2.5-0.5b-instruct
 ```
 
 Or using Python module:
 
 ```bash
-python -m deterministic_inference --model-path /path/to/model
+python -m deterministic_inference --model-path qwen/qwen2.5-0.5b-instruct
 ```
 
 ### 2. Make Requests
@@ -93,7 +85,32 @@ response = client.chat.completions.create(
         {"role": "user", "content": "Hello!"}
     ]
 )
+
+# The response includes an 'environment' field with GPU information
+# Note: Access via response's raw JSON if needed, as OpenAI SDK may not expose custom fields
 ```
+
+### Response Format with GPU Environment
+
+All completion responses include an `environment` field with GPU information:
+
+```json
+{
+  "id": "cmpl-xxx",
+  "object": "chat.completion",
+  "created": 1234567890,
+  "model": "your-model",
+  "choices": [...],
+  "usage": {...},
+  "environment": "{\"gpu_count\": 2, \"gpus\": [{\"index\": 0, \"name\": \"NVIDIA A100\", \"memory_total\": 40960, \"memory_unit\": \"MiB\"}, ...], \"driver_version\": \"535.104.05\", \"cuda_version\": \"12.2+\"}"
+}
+```
+
+The `environment` field contains a JSON string with:
+- **gpu_count**: Number of GPUs available
+- **gpus**: Array of GPU details (index, name, memory)
+- **driver_version**: NVIDIA driver version
+- **cuda_version**: CUDA version
 
 Using curl:
 
@@ -267,6 +284,7 @@ deterministic-inference/
 │       ├── __main__.py           # Module entry point
 │       ├── cli.py                # CLI argument parsing
 │       ├── config.py             # Configuration management
+│       ├── environment.py        # GPU environment collection
 │       ├── logging_config.py     # Logging setup
 │       ├── server.py             # Main server orchestration
 │       ├── backends/
@@ -279,16 +297,18 @@ deterministic-inference/
 ├── docs/
 │   └── REQUIREMENTS.md           # Detailed requirements
 ├── pyproject.toml                # Package configuration
+├── test_gpu_env.py               # GPU environment test script
 └── README.md                     # This file
 ```
 
 ## Architecture
 
-The server consists of three main components:
+The server consists of four main components:
 
-1. **Backend Manager** (`backends/`): Manages the lifecycle of inference backend processes (SGLang, etc.)
-2. **Proxy Server** (`proxy/`): HTTP server that implements OpenAI-compatible API
-3. **Server Orchestrator** (`server.py`): Coordinates backend and proxy lifecycle
+1. **Environment Collector** (`environment.py`): Collects GPU information at startup using gpustat
+2. **Backend Manager** (`backends/`): Manages the lifecycle of inference backend processes (SGLang, etc.)
+3. **Proxy Server** (`proxy/`): HTTP server that implements OpenAI-compatible API and injects environment info
+4. **Server Orchestrator** (`server.py`): Coordinates all components lifecycle
 
 ### Extensibility
 
@@ -349,4 +369,4 @@ MIT License - see LICENSE file for details
 
 ## Contact
 
-ApusLabs - contact@apuslabs.com
+Jax - jax@apus.network

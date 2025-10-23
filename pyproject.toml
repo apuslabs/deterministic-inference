@@ -1,11 +1,11 @@
 [project]
 name = "deterministic-inference"
 version = "0.1.0"
-description = "OpenAI-compatible proxy server for inference backends (SGLang, vLLM, etc.)"
+description = "OpenAI-compatible proxy server for deterministic inference backends (SGLang, vLLM, etc.)"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
-    {name = "ApusLabs", email = "contact@apuslabs.com"}
+    {name = "Jax", email = "jax@apus.network"}
 ]
 license = {text = "MIT"}
 keywords = ["inference", "openai", "sglang", "llm", "proxy"]
@@ -19,7 +19,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "sglang>=0.1.0",
+    "sglang>=0.5.3.post3",
+    "gpustat>=1.1.1",
 ]
 
 [project.optional-dependencies]
