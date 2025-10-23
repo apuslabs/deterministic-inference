@@ -1,7 +1,58 @@
 [project]
 name = "deterministic-inference"
 version = "0.1.0"
-description = "Add your description here"
+description = "OpenAI-compatible proxy server for inference backends (SGLang, vLLM, etc.)"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+authors = [
+    {name = "ApusLabs", email = "contact@apuslabs.com"}
+]
+license = {text = "MIT"}
+keywords = ["inference", "openai", "sglang", "llm", "proxy"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "sglang>=0.1.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+    "openai>=1.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "openai>=1.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+deterministic-inference-server = "deterministic_inference.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deterministic_inference"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
