@@ -140,6 +140,57 @@ class TestCompletionsAPI:
         assert response.choices[0].text is not None
         assert response.usage is not None
         _assert_environment_metadata(response)
+    
+    def test_completion_deterministic(self, openai_client, server_health_check):
+        """Test completion with temperature 0 for deterministic output.
+        
+        Executes the same request 5 times and verifies all responses are identical.
+        """
+        # Test parameters
+        prompt = "Once upon a time"
+        max_tokens = 200
+        temperature = 0.0
+        num_runs = 5
+        
+        # Log input
+        log_test_io("test_completion_deterministic", {
+            "model": "test-model",
+            "prompt": prompt,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "num_runs": num_runs
+        })
+        
+        responses = []
+        for i in range(num_runs):
+            logger.info(f"Run {i+1}/{num_runs}...")
+            response = openai_client.completions.create(
+                model="test-model",
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            responses.append(response)
+            
+            # Log each response
+            logger.info(f"  text: {response.choices[0].text}")
+        
+        # Extract all text outputs
+        texts = [r.choices[0].text for r in responses]
+        
+        # Log output summary
+        log_test_io(None, None, {
+            "num_runs": num_runs,
+            "all_texts_identical": len(set(texts)) == 1,
+            "first_text": texts[0],
+            "unique_outputs": len(set(texts))
+        })
+        
+        # Verify all responses are identical
+        assert len(set(texts)) == 1, f"Expected identical outputs, got {len(set(texts))} different outputs: {texts}"
+        assert responses[0].id is not None
+        assert len(responses[0].choices) > 0
+        _assert_environment_metadata(responses[0])
 
 
 class TestChatCompletionsAPI:
@@ -185,40 +236,58 @@ class TestChatCompletionsAPI:
         _assert_environment_metadata(response)
     
     def test_chat_completion_deterministic(self, openai_client, server_health_check):
-        """Test chat completion with temperature 0 for deterministic output."""
-        # Log input
+        """Test chat completion with temperature 0 for deterministic output.
+        
+        Executes the same request 5 times and verifies all responses are identical.
+        """
+        # Test parameters
         messages = [
-            {"role": "user", "content": "What is 2+2?"}
+            {"role": "user", "content": "Tell me a long story."}
         ]
-        max_tokens = 20
+        max_tokens = 200
         temperature = 0.0
+        num_runs = 5
+        
+        # Log input
         log_test_io("test_chat_completion_deterministic", {
             "model": "test-model",
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": temperature
+            "temperature": temperature,
+            "num_runs": num_runs
         })
         
-        response = openai_client.chat.completions.create(
-            model="test-model",
-            messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature
-        )
+        responses = []
+        for i in range(num_runs):
+            logger.info(f"Run {i+1}/{num_runs}...")
+            response = openai_client.chat.completions.create(
+                model="test-model",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            responses.append(response)
+            
+            # Log each response
+            logger.info(f"  content: {response.choices[0].message.content}")
         
-        # Log output
+        # Extract all message contents
+        contents = [r.choices[0].message.content for r in responses]
+        
+        # Log output summary
         log_test_io(None, None, {
-            "id": response.id,
-            "message.role": response.choices[0].message.role,
-            "message.content": response.choices[0].message.content,
-            "finish_reason": response.choices[0].finish_reason,
-            "usage": response.usage
+            "num_runs": num_runs,
+            "all_contents_identical": len(set(contents)) == 1,
+            "first_content": contents[0],
+            "unique_outputs": len(set(contents))
         })
         
-        assert response.id is not None
-        assert len(response.choices) > 0
-        assert response.choices[0].message.content is not None
-        _assert_environment_metadata(response)
+        # Verify all responses are identical
+        assert len(set(contents)) == 1, f"Expected identical outputs, got {len(set(contents))} different outputs: {contents}"
+        assert responses[0].id is not None
+        assert len(responses[0].choices) > 0
+        assert responses[0].choices[0].message.content is not None
+        _assert_environment_metadata(responses[0])
 
 class TestErrorHandling:
     """Test error handling scenarios."""
