@@ -54,7 +54,9 @@ class SGLangBackend(Backend):
                 "python3", "-m", "sglang.launch_server",
                 "--model-path", self.model_path,
                 "--host", self.host,
-                "--port", str(self.port)
+                "--port", str(self.port),
+                "--attention-backend", "fa3",
+                "--enable-deterministic-inference"
             ]
             
             logger.info(f"Starting SGLang server with model: {self.model_path}")
