@@ -57,4 +57,9 @@ ignore = []
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short"
+addopts = "-v --tb=short --log-cli-level=INFO"
+log_cli = true
+log_cli_format = "%(message)s"
+markers = [
+    "integration: mark test as integration test",
+]
