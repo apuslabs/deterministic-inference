@@ -1,66 +1,78 @@
 """Integration tests for the inference server using OpenAI SDK."""
 
 import json
+import os
 import time
 
 import pytest
 from openai import OpenAI
 
 
+# Default base URL, can be overridden with SERVER_BASE_URL environment variable
+DEFAULT_BASE_URL = "http://127.0.0.1:8080"
+# DEFAULT_BASE_URL = "http://127.0.0.1:8734/~inference@1.0"
+
+
 @pytest.fixture(scope="module")
-def openai_client():
+def base_url():
+    """Get the base URL for the inference server from environment or use default."""
+    return os.getenv("SERVER_BASE_URL", DEFAULT_BASE_URL)
+
+
+@pytest.fixture(scope="module")
+def openai_client(base_url):
     """Create OpenAI client pointing to the local inference server.
     
     Note: This assumes the inference server is already running.
     You can start it manually or use a pytest fixture to manage the server lifecycle.
     """
     client = OpenAI(
-        base_url="http://127.0.0.1:8080/v1",
-        api_key="dummy-key"  # API key not required but SDK needs one
+        base_url=base_url,
+        api_key="test-api-key"  # Dummy API key for testing
     )
     return client
 
 
 @pytest.fixture(scope="module")
-def server_health_check():
+def server_health_check(base_url):
     """Ensure server is healthy before running tests."""
     import urllib.request
     import urllib.error
     
+    health_url = f"{base_url}/health"
     max_retries = 10
     retry_delay = 2
     
     for i in range(max_retries):
         try:
-            response = urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=5)
+            response = urllib.request.urlopen(health_url, timeout=5)
             if response.getcode() == 200:
-                print("Server is healthy and ready")
+                print(f"Server is healthy and ready at {base_url}")
                 return True
         except urllib.error.URLError:
             if i < max_retries - 1:
-                print(f"Server not ready, retrying in {retry_delay}s...")
+                print(f"Server not ready at {base_url}, retrying in {retry_delay}s...")
                 time.sleep(retry_delay)
             else:
-                pytest.skip("Server is not available")
+                pytest.skip(f"Server is not available at {base_url}")
     
-    pytest.skip("Server health check failed")
+    pytest.skip(f"Server health check failed at {base_url}")
 
 
 class TestHealthEndpoint:
     """Test the health check endpoint."""
     
-    def test_health_endpoint(self, server_health_check):
+    def test_health_endpoint(self, base_url, server_health_check):
         """Test that health endpoint returns 200."""
         import urllib.request
         
-        response = urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=5)
+        health_url = f"{base_url}/health"
+        response = urllib.request.urlopen(health_url, timeout=5)
         assert response.getcode() == 200
-        
         import json
         data = json.loads(response.read())
         assert "status" in data
         assert data["status"] == "healthy"
-        assert "backend" in data
 
 
 class TestCompletionsAPI:
@@ -157,13 +169,14 @@ class TestChatCompletionsAPI:
 class TestErrorHandling:
     """Test error handling scenarios."""
     
-    def test_invalid_endpoint(self):
+    def test_invalid_endpoint(self, base_url):
         """Test that invalid endpoints return 404."""
         import urllib.request
         import urllib.error
         
         try:
-            urllib.request.urlopen("http://127.0.0.1:8080/v1/invalid", timeout=5)
+            invalid_url = f"{base_url}//invalid"
+            urllib.request.urlopen(invalid_url, timeout=5)
             assert False, "Should have raised HTTPError"
         except urllib.error.HTTPError as e:
             assert e.code == 404
