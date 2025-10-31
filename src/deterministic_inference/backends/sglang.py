@@ -1,12 +1,13 @@
 """SGLang backend implementation."""
 
+import atexit
 import os
 import signal
 import subprocess
 import time
 import urllib.error
 import urllib.request
-from pathlib import Path
+import weakref
 from typing import Optional
 
 from deterministic_inference.backends.base import Backend
@@ -14,9 +15,29 @@ from deterministic_inference.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+_process_registry = weakref.WeakValueDictionary()
+
+
+def _cleanup_all_processes():
+    """Global cleanup to terminate all SGLang processes on exit."""
+    if not _process_registry:
+        return
+    
+    logger.info(f"Cleaning up {len(_process_registry)} SGLang process(es)")
+    
+    for instance in list(_process_registry.values()):
+        try:
+            if instance.is_running():
+                instance.stop_server(timeout=10)
+        except Exception as e:
+            logger.error(f"Error cleaning up SGLang instance: {e}")
+
+
+atexit.register(_cleanup_all_processes)
+
 
 class SGLangBackend(Backend):
-    """SGLang inference backend implementation."""
+    """SGLang backend manages a heavy, resource-intensive inference server process."""
     
     def __init__(
         self,
@@ -25,18 +46,13 @@ class SGLangBackend(Backend):
         port: int = 30000,
         startup_timeout: int = 300
     ):
-        """Initialize SGLang backend.
-        
-        Args:
-            model_path: Path to the model directory
-            host: Host address to bind the SGLang server
-            port: Port number for the SGLang server
-            startup_timeout: Maximum time to wait for server startup (seconds)
-        """
         super().__init__(model_path, host, port)
         self.startup_timeout = startup_timeout
         self.process: Optional[subprocess.Popen] = None
-        self.pid_file = Path(f"/tmp/sglang_backend_{self.port}.pid")
+        self._shutdown_requested = False
+        
+        atexit.register(self._atexit_cleanup)
+        _process_registry[id(self)] = self
     
     def start_server(self) -> bool:
         """Start the SGLang inference server.
@@ -48,26 +64,17 @@ class SGLangBackend(Backend):
             logger.error("No model path specified")
             return False
         
-        # Check for existing PID file
-        if self.pid_file.exists():
-            try:
-                existing_pid = int(self.pid_file.read_text().strip())
-                if self._is_process_running(existing_pid):
-                    logger.error(
-                        f"Another SGLang instance is already running (PID: {existing_pid}). "
-                        f"Cannot start new instance on port {self.port}."
-                    )
-                    return False
-                else:
-                    logger.warning(f"Stale PID file found (PID: {existing_pid}), removing")
-                    self.pid_file.unlink()
-            except (ValueError, OSError) as e:
-                logger.warning(f"Error reading PID file: {e}, removing")
-                self.pid_file.unlink()
-        
         if self.process is not None:
-            logger.warning("SGLang server is already running in this instance")
-            return True
+            if self.is_running():
+                logger.warning("SGLang server already running")
+                return True
+            else:
+                logger.warning("Process object exists but dead, cleaning up")
+                self.process = None
+        
+        if self._is_port_in_use():
+            logger.error(f"Port {self.port} already in use")
+            return False
         
         try:
             cmd = [
@@ -80,62 +87,95 @@ class SGLangBackend(Backend):
                 "--context-length", "32768"
             ]
             
-            logger.info(f"Starting SGLang server: {self.model_path}")
+            logger.info(f"Starting SGLang: {self.model_path} on {self.host}:{self.port}")
             
             self.process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
                 env=os.environ.copy(),
-                preexec_fn=os.setsid
+                preexec_fn=os.setsid,
+                start_new_session=True
             )
             
-            try:
-                self.pid_file.write_text(str(self.process.pid))
-            except OSError as e:
-                logger.error(f"Failed to write PID file: {e}")
-                self.stop_server()
-                return False
+            logger.info(f"Process started (PID: {self.process.pid})")
             
-            # Wait for server to be ready
             if self._wait_for_ready():
-                logger.info(f"SGLang server started successfully at {self.base_url}")
+                logger.info(f"Server ready at {self.base_url}")
                 return True
             else:
-                logger.error("Failed to start SGLang server")
+                logger.error("Server failed to start")
                 self.stop_server()
                 return False
         
         except Exception as e:
-            logger.error(f"Error starting SGLang server: {e}", exc_info=True)
+            logger.error(f"Error starting server: {e}", exc_info=True)
+            if self.process is not None:
+                self.stop_server()
+            return False
+    
+    def _is_port_in_use(self) -> bool:
+        """Check if port is in use by attempting health check."""
+        try:
+            response = urllib.request.urlopen(
+                f"http://{self.host}:{self.port}/health",
+                timeout=1
+            )
+            return True
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError):
+            return False
+        except Exception:
             return False
     
     def _wait_for_ready(self) -> bool:
-        """Wait for SGLang server to be ready."""
+        """Wait for server to be ready, polling process status and health endpoint."""
         start_time = time.time()
-        logger.info(f"Waiting for server (timeout: {self.startup_timeout}s)...")
+        logger.info(f"Waiting for server (timeout: {self.startup_timeout}s)")
+        
+        last_log_time = start_time
+        check_interval = 2
         
         while time.time() - start_time < self.startup_timeout:
             try:
                 if self.process and self.process.poll() is not None:
-                    stdout, stderr = self.process.communicate()
-                    logger.error(f"Process exited unexpectedly: {stderr.decode()}")
+                    return_code = self.process.returncode
+                    stderr_output = ""
+                    
+                    if self.process.stderr:
+                        try:
+                            stderr_data = self.process.stderr.read()
+                            stderr_output = stderr_data.decode('utf-8', errors='replace')[:1000]
+                        except Exception as e:
+                            logger.debug(f"Couldn't read stderr: {e}")
+                    
+                    logger.error(
+                        f"Process exited unexpectedly (code {return_code})"
+                        + (f":\n{stderr_output}" if stderr_output else "")
+                    )
                     return False
                 
                 if self.health_check():
-                    logger.info("Server ready")
+                    elapsed = int(time.time() - start_time)
+                    logger.info(f"Server ready ({elapsed}s)")
                     return True
                 
-                time.sleep(2)
+                current_time = time.time()
+                if current_time - last_log_time >= 10:
+                    elapsed = int(current_time - start_time)
+                    logger.info(f"Still waiting ({elapsed}s)")
+                    last_log_time = current_time
+                
+                time.sleep(check_interval)
             except Exception as e:
-                logger.debug(f"Health check retry: {e}")
-                time.sleep(2)
+                logger.debug(f"Health check error: {e}")
+                time.sleep(check_interval)
         
         logger.error(f"Timeout after {self.startup_timeout}s")
         return False
     
     def health_check(self) -> bool:
-        """Check if SGLang server is healthy."""
+        """Check if server is healthy via HTTP health endpoint."""
         if not self.is_running():
             return False
         
@@ -146,64 +186,82 @@ class SGLangBackend(Backend):
             return False
     
     def is_running(self) -> bool:
-        """Check if SGLang process is running."""
+        """Check if process is running (poll returns None if alive)."""
         if self.process is None:
             return False
-        
-        if self.process.poll() is not None:
-            return False
-        
-        if self.pid_file.exists():
-            try:
-                pid = int(self.pid_file.read_text().strip())
-                return self._is_process_running(pid)
-            except (ValueError, OSError):
-                return False
-        
-        return True
+        return self.process.poll() is None
     
-    def _is_process_running(self, pid: int) -> bool:
-        """Check if a process with given PID is running."""
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-    
-    def stop_server(self) -> None:
-        """Stop the SGLang server gracefully."""
+    def stop_server(self, timeout: int = 30) -> None:
+        """Stop server gracefully: SIGTERM -> wait -> SIGKILL if needed."""
         if self.process is None:
-            self._cleanup_pid_file()
             return
         
-        logger.info("Stopping server...")
+        if self._shutdown_requested:
+            logger.debug("Shutdown already in progress, skipping")
+            return
+        
+        self._shutdown_requested = True
         
         try:
+            pid = self.process.pid
+            logger.info(f"Stopping server (PID: {pid})")
+            
+            if self.process.poll() is not None:
+                logger.info("Process already terminated")
+                return
+            
             try:
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-            except ProcessLookupError:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                logger.debug("Sent SIGTERM to process group")
+            except (ProcessLookupError, PermissionError) as e:
+                logger.warning(f"Process group termination failed: {e}, using direct terminate")
                 self.process.terminate()
             
             try:
-                self.process.wait(timeout=15)
-                logger.info("Server stopped")
+                return_code = self.process.wait(timeout=timeout)
+                logger.info(f"Server stopped (code: {return_code})")
+                return
             except subprocess.TimeoutExpired:
-                logger.warning("Forcing kill")
-                try:
-                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                except ProcessLookupError:
-                    self.process.kill()
-                self.process.wait()
+                logger.warning(f"Timeout after {timeout}s, forcing kill")
+            
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+                logger.debug("Sent SIGKILL to process group")
+            except (ProcessLookupError, PermissionError):
+                self.process.kill()
+            
+            try:
+                self.process.wait(timeout=5)
+                logger.info("Server forcefully terminated")
+            except subprocess.TimeoutExpired:
+                logger.error("Process still alive after SIGKILL")
+                
         except Exception as e:
-            logger.error(f"Error stopping server: {e}")
+            logger.error(f"Error stopping server: {e}", exc_info=True)
         finally:
             self.process = None
-            self._cleanup_pid_file()
+            self._shutdown_requested = False
     
-    def _cleanup_pid_file(self) -> None:
-        """Remove PID file if it exists."""
-        if self.pid_file.exists():
-            try:
-                self.pid_file.unlink()
-            except OSError as e:
-                logger.warning(f"Failed to remove PID file: {e}")
+    def _atexit_cleanup(self) -> None:
+        """Cleanup on program exit."""
+        if self.process is not None and self.is_running():
+            logger.warning("Cleaning up on exit")
+            self.stop_server(timeout=10)
+    
+    def __del__(self) -> None:
+        """Cleanup on garbage collection."""
+        if self.process is not None and self.is_running():
+            logger.warning("Cleaning up on destruction")
+            self.stop_server(timeout=10)
+    
+    def __enter__(self):
+        """Context manager: start server."""
+        if not self.is_running():
+            if not self.start_server():
+                raise RuntimeError("Failed to start SGLang server")
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager: stop server."""
+        self.stop_server()
+        return False
