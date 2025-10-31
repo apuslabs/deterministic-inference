@@ -19,25 +19,25 @@ _process_registry = weakref.WeakValueDictionary()
 
 
 def _cleanup_all_processes():
-    """Global cleanup to terminate all SGLang processes on exit."""
+    """Global cleanup on exit."""
     if not _process_registry:
         return
     
-    logger.info(f"Cleaning up {len(_process_registry)} SGLang process(es)")
+    logger.info(f"Cleanup {len(_process_registry)} SGLang process(es)")
     
     for instance in list(_process_registry.values()):
         try:
             if instance.is_running():
                 instance.stop_server(timeout=10)
         except Exception as e:
-            logger.error(f"Error cleaning up SGLang instance: {e}")
+            logger.error(f"Cleanup error: {e}")
 
 
 atexit.register(_cleanup_all_processes)
 
 
 class SGLangBackend(Backend):
-    """SGLang backend manages a heavy, resource-intensive inference server process."""
+    """SGLang backend for heavy inference server process."""
     
     def __init__(
         self,
@@ -55,11 +55,7 @@ class SGLangBackend(Backend):
         _process_registry[id(self)] = self
     
     def start_server(self) -> bool:
-        """Start the SGLang inference server.
-        
-        Returns:
-            True if server started successfully, False otherwise
-        """
+        """Start SGLang server."""
         if not self.model_path:
             logger.error("No model path specified")
             return False
@@ -116,7 +112,7 @@ class SGLangBackend(Backend):
             return False
     
     def _is_port_in_use(self) -> bool:
-        """Check if port is in use by attempting health check."""
+        """Check if port is in use."""
         try:
             response = urllib.request.urlopen(
                 f"http://{self.host}:{self.port}/health",
@@ -129,7 +125,7 @@ class SGLangBackend(Backend):
             return False
     
     def _wait_for_ready(self) -> bool:
-        """Wait for server to be ready, polling process status and health endpoint."""
+        """Wait for server ready."""
         start_time = time.time()
         logger.info(f"Waiting for server (timeout: {self.startup_timeout}s)")
         
@@ -175,7 +171,7 @@ class SGLangBackend(Backend):
         return False
     
     def health_check(self) -> bool:
-        """Check if server is healthy via HTTP health endpoint."""
+        """Check if server is healthy."""
         if not self.is_running():
             return False
         
@@ -186,13 +182,13 @@ class SGLangBackend(Backend):
             return False
     
     def is_running(self) -> bool:
-        """Check if process is running (poll returns None if alive)."""
+        """Check if process is running."""
         if self.process is None:
             return False
         return self.process.poll() is None
     
     def stop_server(self, timeout: int = 30) -> None:
-        """Stop server gracefully: SIGTERM -> wait -> SIGKILL if needed."""
+        """Stop server gracefully."""
         if self.process is None:
             return
         
@@ -243,25 +239,25 @@ class SGLangBackend(Backend):
             self._shutdown_requested = False
     
     def _atexit_cleanup(self) -> None:
-        """Cleanup on program exit."""
+        """Cleanup on exit."""
         if self.process is not None and self.is_running():
             logger.warning("Cleaning up on exit")
             self.stop_server(timeout=10)
     
     def __del__(self) -> None:
-        """Cleanup on garbage collection."""
+        """Cleanup on GC."""
         if self.process is not None and self.is_running():
             logger.warning("Cleaning up on destruction")
             self.stop_server(timeout=10)
     
     def __enter__(self):
-        """Context manager: start server."""
+        """Start server."""
         if not self.is_running():
             if not self.start_server():
                 raise RuntimeError("Failed to start SGLang server")
         return self
     
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager: stop server."""
+        """Stop server."""
         self.stop_server()
         return False

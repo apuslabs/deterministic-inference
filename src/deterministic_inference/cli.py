@@ -10,177 +10,104 @@ from deterministic_inference.server import InferenceServer, setup_signal_handler
 
 
 def parse_args(args: Optional[list] = None) -> argparse.Namespace:
-    """Parse command-line arguments.
-    
-    Args:
-        args: List of arguments to parse (defaults to sys.argv[1:])
-    
-    Returns:
-        Parsed arguments namespace
-    """
+    """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
         prog="deterministic-inference-server",
-        description="OpenAI-compatible proxy server for inference backends",
+        description="OpenAI-compatible inference server with SGLang backend",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Start server with SGLang backend
   deterministic-inference-server --model-path /path/to/model
+  deterministic-inference-server --model-path /path/to/model --port 8000
+  deterministic-inference-server --model-path /path/to/model --debug
+
+Logs:
+  Auto-saved to ~/.cache/deterministic-inference/logs/ with rotation.
   
-  # Start with custom ports
-  deterministic-inference-server --model-path /path/to/model --proxy-port 8000
-  
-  # Enable debug logging with file output
-  deterministic-inference-server --model-path /path/to/model --log-level DEBUG --log-file server.log
-  
-Environment Variables:
-  INFERENCE_MODEL_PATH          Model directory path
-  INFERENCE_BACKEND             Backend type (default: sglang)
-  INFERENCE_BACKEND_HOST        Backend server host (default: 127.0.0.1)
-  INFERENCE_BACKEND_PORT        Backend server port (default: 30000)
-  INFERENCE_PROXY_HOST          Proxy server host (default: 127.0.0.1)
-  INFERENCE_PROXY_PORT          Proxy server port (default: 8080)
-  INFERENCE_LOG_LEVEL           Log level (default: INFO)
-  INFERENCE_LOG_FILE            Log file path (optional)
-  INFERENCE_LOG_TO_CONSOLE      Log to console (default: true)
-  
-Configuration Precedence: CLI args > Environment variables > Defaults
+Env Variables:
+  INFERENCE_MODEL_PATH       Model path
+  INFERENCE_PORT             Server port (default: 8080)
+  INFERENCE_BACKEND_PORT     Backend port (default: 30000)
+  INFERENCE_STARTUP_TIMEOUT  Startup timeout seconds (default: 300)
         """
     )
-    
-    # Model configuration
     parser.add_argument(
         "--model-path",
         type=str,
-        help="Path to the model directory (required)"
-    )
-    
-    # Backend configuration
-    parser.add_argument(
-        "--backend",
-        type=str,
-        choices=["sglang"],
-        help="Inference backend type (default: sglang)"
+        help="Model directory path (required)"
     )
     parser.add_argument(
-        "--backend-host",
-        type=str,
-        help="Backend server host (default: 127.0.0.1)"
+        "--port",
+        type=int,
+        help="Server port (default: 8080)"
     )
     parser.add_argument(
         "--backend-port",
         type=int,
-        help="Backend server port (default: 30000)"
+        help="SGLang backend port (default: 30000)"
     )
     parser.add_argument(
-        "--backend-startup-timeout",
+        "--timeout",
         type=int,
-        help="Backend startup timeout in seconds (default: 300)"
-    )
-    
-    # Proxy server configuration
-    parser.add_argument(
-        "--proxy-host",
-        type=str,
-        help="Proxy server host (default: 127.0.0.1)"
+        help="Startup timeout seconds (default: 300)"
     )
     parser.add_argument(
-        "--proxy-port",
-        type=int,
-        help="Proxy server port (default: 8080)"
-    )
-    
-    # Logging configuration
-    parser.add_argument(
-        "--log-level",
-        type=str,
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level (default: INFO)"
-    )
-    parser.add_argument(
-        "--log-file",
-        type=str,
-        help="Path to log file (optional, logs to file if specified)"
-    )
-    parser.add_argument(
-        "--log-to-console",
-        type=str,
-        choices=["true", "false"],
-        help="Whether to log to console (default: true)"
+        "--debug",
+        action="store_true",
+        help="Enable debug logging"
     )
     
     return parser.parse_args(args)
 
 
 def main(args: Optional[list] = None) -> int:
-    """Main entry point for the CLI.
-    
-    Args:
-        args: List of arguments to parse (defaults to sys.argv[1:])
-    
-    Returns:
-        Exit code (0 for success, non-zero for error)
-    """
+    """Main entry point."""
     try:
-        # Parse command-line arguments
         parsed_args = parse_args(args)
         
-        # Build configuration: CLI args > Env vars > Defaults
+        # Config priority: CLI args > Env vars > Defaults
         base_config = Config.from_env()
         
-        # Convert parsed args to dict, handling special cases
         cli_kwargs = {
             "model_path": parsed_args.model_path,
-            "backend": parsed_args.backend,
-            "backend_host": parsed_args.backend_host,
             "backend_port": parsed_args.backend_port,
-            "backend_startup_timeout": parsed_args.backend_startup_timeout,
-            "proxy_host": parsed_args.proxy_host,
-            "proxy_port": parsed_args.proxy_port,
-            "log_level": parsed_args.log_level,
-            "log_file": parsed_args.log_file,
+            "proxy_port": parsed_args.port,
+            "backend_startup_timeout": parsed_args.timeout,
+            "log_level": "DEBUG" if parsed_args.debug else None,
         }
         
-        # Handle log_to_console conversion
-        if parsed_args.log_to_console is not None:
-            cli_kwargs["log_to_console"] = parsed_args.log_to_console == "true"
-        else:
-            cli_kwargs["log_to_console"] = None
-        
-        # Merge CLI args with base config (CLI takes precedence)
         config = base_config.merge_with_args(**cli_kwargs)
         
-        # Setup logging before anything else
-        setup_logging(
-            level=config.log_level,
-            log_file=config.log_file,
-            log_to_console=config.log_to_console
-        )
-        
-        logger = get_logger(__name__)
-        logger.info("Starting Deterministic Inference Server CLI")
-        
-        # Validate configuration
         try:
             config.validate()
         except ValueError as e:
-            logger.error(f"Configuration error: {e}")
             print(f"Error: {e}", file=sys.stderr)
-            print("\nUse --help for usage information", file=sys.stderr)
+            print("Use --help for usage information", file=sys.stderr)
             return 1
         
-        # Create and start server
-        server = InferenceServer(config)
+        # Auto file logging with rotation
+        setup_logging(
+            level=config.log_level,
+            log_to_console=True,
+            enable_rotation=True,
+        )
         
-        # Setup signal handlers for graceful shutdown
+        logger = get_logger(__name__)
+        logger.info("=" * 70)
+        logger.info("Deterministic Inference Server")
+        logger.info("=" * 70)
+        logger.info(f"Model: {config.model_path}")
+        logger.info(f"Server: http://127.0.0.1:{config.proxy_port}")
+        logger.info(f"Backend: SGLang on port {config.backend_port}")
+        logger.info("=" * 70)
+        
+        server = InferenceServer(config)
         setup_signal_handlers(server)
         
-        # Start server
         if not server.start():
             logger.error("Failed to start server")
             return 1
         
-        # Wait for shutdown signal
         server.wait_forever()
         
         return 0
