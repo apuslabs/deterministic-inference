@@ -85,15 +85,19 @@ class SGLangBackend(Backend):
             
             logger.info(f"Starting SGLang: {self.model_path} on {self.host}:{self.port}")
             
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                stdin=subprocess.DEVNULL,
-                env=os.environ.copy(),
-                preexec_fn=os.setsid,
-                start_new_session=True
-            )
+            popen_kwargs = {
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "stdin": subprocess.DEVNULL,
+                "env": os.environ.copy(),
+            }
+            
+            if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
+                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
+            
+            self.process = subprocess.Popen(cmd, **popen_kwargs)
             
             logger.info(f"Process started (PID: {self.process.pid})")
             
@@ -207,10 +211,18 @@ class SGLangBackend(Backend):
                 return
             
             try:
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-                logger.debug("Sent SIGTERM to process group")
-            except (ProcessLookupError, PermissionError) as e:
-                logger.warning(f"Process group termination failed: {e}, using direct terminate")
+                if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
+                    # Unix: try to kill process group
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGTERM)
+                        logger.debug("Sent SIGTERM to process group")
+                    except (ProcessLookupError, PermissionError, OSError):
+                        self.process.terminate()
+                else:
+                    self.process.terminate()
+                    logger.debug("Sent terminate signal")
+            except Exception as e:
+                logger.warning(f"Termination failed: {e}, trying direct terminate")
                 self.process.terminate()
             
             try:
@@ -221,16 +233,22 @@ class SGLangBackend(Backend):
                 logger.warning(f"Timeout after {timeout}s, forcing kill")
             
             try:
-                os.killpg(os.getpgid(pid), signal.SIGKILL)
-                logger.debug("Sent SIGKILL to process group")
-            except (ProcessLookupError, PermissionError):
+                if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGKILL)
+                        logger.debug("Sent SIGKILL to process group")
+                    except (ProcessLookupError, PermissionError, OSError):
+                        self.process.kill()
+                else:
+                    self.process.kill()
+            except Exception:
                 self.process.kill()
             
             try:
                 self.process.wait(timeout=5)
                 logger.info("Server forcefully terminated")
             except subprocess.TimeoutExpired:
-                logger.error("Process still alive after SIGKILL")
+                logger.error("Process still alive after kill")
                 
         except Exception as e:
             logger.error(f"Error stopping server: {e}", exc_info=True)
