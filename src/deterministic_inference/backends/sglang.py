@@ -86,8 +86,6 @@ class SGLangBackend(Backend):
             logger.info(f"Starting SGLang: {self.model_path} on {self.host}:{self.port}")
             
             popen_kwargs = {
-                "stdout": subprocess.PIPE,
-                "stderr": subprocess.PIPE,
                 "stdin": subprocess.DEVNULL,
                 "env": os.environ.copy(),
             }
@@ -140,18 +138,9 @@ class SGLangBackend(Backend):
             try:
                 if self.process and self.process.poll() is not None:
                     return_code = self.process.returncode
-                    stderr_output = ""
-                    
-                    if self.process.stderr:
-                        try:
-                            stderr_data = self.process.stderr.read()
-                            stderr_output = stderr_data.decode('utf-8', errors='replace')[:1000]
-                        except Exception as e:
-                            logger.debug(f"Couldn't read stderr: {e}")
-                    
                     logger.error(
-                        f"Process exited unexpectedly (code {return_code})"
-                        + (f":\n{stderr_output}" if stderr_output else "")
+                        f"Process exited unexpectedly (code {return_code}). "
+                        f"Check the console output above for error details."
                     )
                     return False
                 
