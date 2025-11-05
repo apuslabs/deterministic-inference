@@ -72,21 +72,20 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
                 response_headers = response.headers
                 body = response.read()
 
-                should_inject = self._should_inject_environment()
-                if should_inject:
-                    body = self._inject_environment_payload(
-                        body,
-                        response_headers.get("Content-Type", ""),
-                    )
+                # Inject environment metadata for completion endpoints
+                if self.environment_info and self.path.startswith("/v1/"):
+                    try:
+                        payload = json.loads(body.decode("utf-8"))
+                        payload["environment"] = self.environment_info
+                        body = json.dumps(payload).encode("utf-8")
+                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                        logger.warning(f"Failed to inject environment: {exc}")
 
                 self.send_response(status_code)
 
                 for header, value in response_headers.items():
                     header_lower = header.lower()
                     if header_lower in ["connection", "transfer-encoding", "content-length"]:
-                        continue
-                    if header_lower == "content-encoding" and should_inject:
-                        # Payload has been re-encoded; drop stale encoding header
                         continue
                     self.send_header(header, value)
 
@@ -175,27 +174,3 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
         """Override to suppress default HTTP request logging."""
         # We handle logging via our own logger
         pass
-
-    def _should_inject_environment(self) -> bool:
-        """Determine whether the response should include environment metadata."""
-        if not self.environment_info:
-            return False
-        return self.path.startswith("/v1/completions") or self.path.startswith("/v1/chat/completions")
-
-    def _inject_environment_payload(self, body: bytes, content_type: str) -> bytes:
-        """Inject environment metadata into JSON response bodies."""
-        if "application/json" not in content_type.lower():
-            logger.warning(
-                "Skipping environment injection due to unsupported content type: %s",
-                content_type,
-            )
-            return body
-
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            logger.error("Failed to decode backend response for environment injection: %s", exc)
-            return body
-
-        payload["environment"] = self.environment_info
-        return json.dumps(payload).encode("utf-8")

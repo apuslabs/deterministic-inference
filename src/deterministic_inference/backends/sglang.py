@@ -1,13 +1,11 @@
 """SGLang backend implementation."""
 
-import atexit
 import os
 import signal
 import subprocess
 import time
 import urllib.error
 import urllib.request
-import weakref
 from typing import Optional
 
 from deterministic_inference.backends.base import Backend
@@ -15,30 +13,10 @@ from deterministic_inference.logging_config import get_logger
 
 logger = get_logger(__name__)
 
-_process_registry = weakref.WeakValueDictionary()
-
-
-def _cleanup_all_processes():
-    """Global cleanup on exit."""
-    if not _process_registry:
-        return
-    
-    logger.info(f"Cleanup {len(_process_registry)} SGLang process(es)")
-    
-    for instance in list(_process_registry.values()):
-        try:
-            if instance.is_running():
-                instance.stop_server(timeout=10)
-        except Exception as e:
-            logger.error(f"Cleanup error: {e}")
-
-
-atexit.register(_cleanup_all_processes)
-
 
 class SGLangBackend(Backend):
-    """SGLang backend for heavy inference server process."""
-    
+    """SGLang backend for inference server process."""
+
     def __init__(
         self,
         model_path: str,
@@ -49,10 +27,6 @@ class SGLangBackend(Backend):
         super().__init__(model_path, host, port)
         self.startup_timeout = startup_timeout
         self.process: Optional[subprocess.Popen] = None
-        self._shutdown_requested = False
-        
-        atexit.register(self._atexit_cleanup)
-        _process_registry[id(self)] = self
     
     def start_server(self) -> bool:
         """Start SGLang server."""
@@ -85,17 +59,11 @@ class SGLangBackend(Backend):
             
             logger.info(f"Starting SGLang: {self.model_path} on {self.host}:{self.port}")
             
-            popen_kwargs = {
-                "stdin": subprocess.DEVNULL,
-                "env": os.environ.copy(),
-            }
-            
-            if hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'):
-                popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                popen_kwargs["start_new_session"] = True
-            
-            self.process = subprocess.Popen(cmd, **popen_kwargs)
+            self.process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                env=os.environ.copy()
+            )
             
             logger.info(f"Process started (PID: {self.process.pid})")
             
@@ -184,78 +152,48 @@ class SGLangBackend(Backend):
         """Stop server gracefully."""
         if self.process is None:
             return
-        
-        if self._shutdown_requested:
-            logger.debug("Shutdown already in progress, skipping")
-            return
-        
-        self._shutdown_requested = True
-        
+
         try:
             pid = self.process.pid
             logger.info(f"Stopping server (PID: {pid})")
-            
+
             if self.process.poll() is not None:
                 logger.info("Process already terminated")
                 return
-            
-            try:
-                if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
-                    # Unix: try to kill process group
-                    try:
-                        os.killpg(os.getpgid(pid), signal.SIGTERM)
-                        logger.debug("Sent SIGTERM to process group")
-                    except (ProcessLookupError, PermissionError, OSError):
-                        self.process.terminate()
-                else:
-                    self.process.terminate()
-                    logger.debug("Sent terminate signal")
-            except Exception as e:
-                logger.warning(f"Termination failed: {e}, trying direct terminate")
-                self.process.terminate()
-            
+
+            # Send SIGTERM first
+            self.process.terminate()
+            logger.debug("Sent SIGTERM")
+
             try:
                 return_code = self.process.wait(timeout=timeout)
                 logger.info(f"Server stopped (code: {return_code})")
                 return
             except subprocess.TimeoutExpired:
                 logger.warning(f"Timeout after {timeout}s, forcing kill")
-            
-            try:
-                if hasattr(os, 'killpg') and hasattr(os, 'getpgid'):
-                    try:
-                        os.killpg(os.getpgid(pid), signal.SIGKILL)
-                        logger.debug("Sent SIGKILL to process group")
-                    except (ProcessLookupError, PermissionError, OSError):
-                        self.process.kill()
-                else:
-                    self.process.kill()
-            except Exception:
-                self.process.kill()
-            
+
+            # Force kill if timeout
+            self.process.kill()
+            logger.debug("Sent SIGKILL")
+
             try:
                 self.process.wait(timeout=5)
                 logger.info("Server forcefully terminated")
             except subprocess.TimeoutExpired:
                 logger.error("Process still alive after kill")
-                
+
         except Exception as e:
             logger.error(f"Error stopping server: {e}", exc_info=True)
         finally:
             self.process = None
-            self._shutdown_requested = False
-    
-    def _atexit_cleanup(self) -> None:
-        """Cleanup on exit."""
-        if self.process is not None and self.is_running():
-            logger.warning("Cleaning up on exit")
-            self.stop_server(timeout=10)
-    
+
     def __del__(self) -> None:
         """Cleanup on GC."""
         if self.process is not None and self.is_running():
-            logger.warning("Cleaning up on destruction")
-            self.stop_server(timeout=10)
+            try:
+                self.stop_server(timeout=5)
+            except Exception:
+                pass  # Ignore errors during cleanup
     
     def __enter__(self):
         """Start server."""

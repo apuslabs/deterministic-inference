@@ -9,7 +9,7 @@ from typing import Optional
 
 from deterministic_inference.backends.base import Backend
 from deterministic_inference.backends.sglang import SGLangBackend
-from deterministic_inference.config import Config
+from types import SimpleNamespace
 from deterministic_inference.environment import (
     EnvironmentCollectionError,
     collect_gpu_environment_json,
@@ -22,15 +22,15 @@ logger = get_logger(__name__)
 
 class InferenceServer:
     """Main server orchestrating backend and proxy."""
-    
-    def __init__(self, config: Config):
+
+    def __init__(self, config: SimpleNamespace):
         self.config = config
         self.backend: Optional[Backend] = None
         self.http_server: Optional[HTTPServer] = None
         self.server_thread: Optional[threading.Thread] = None
         self._shutdown_event = threading.Event()
         self.environment_json: Optional[str] = None
-        
+
         self._init_backend()
         self._collect_environment_info()
     

@@ -16,37 +16,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def log_test_io(test_name, input_data, output_data=None):
-    """Log test input and output in a structured format.
-    
-    Args:
-        test_name: Name of the test being run
-        input_data: Dictionary of input parameters
-        output_data: Dictionary of output data (optional, for logging after API call)
-    """
-    if output_data is None:
-        # Log input only
-        logger.info("=" * 80)
-        logger.info(f"TEST: {test_name}")
-        logger.info("INPUT:")
-        for key, value in input_data.items():
-            if key == "messages" and isinstance(value, list):
-                logger.info(f"  {key}:")
-                for msg in value:
-                    logger.info(f"    - role: {msg['role']}, content: {msg['content']}")
-            else:
-                logger.info(f"  {key}: {value}")
-    else:
-        # Log output only
-        logger.info("OUTPUT:")
-        for key, value in output_data.items():
-            logger.info(f"  {key}: {value}")
-        logger.info("=" * 80)
+def log_test(test_name, message):
+    """Simple test logging."""
+    logger.info(f"TEST: {test_name} - {message}")
 
 
 # Default base URL, can be overridden with SERVER_BASE_URL environment variable
-# DEFAULT_BASE_URL = "http://127.0.0.1:8080/"
-DEFAULT_BASE_URL = "http://127.0.0.1:8734/~inference@1.0"
+DEFAULT_BASE_URL = "http://127.0.0.1:8080/v1"
+# DEFAULT_BASE_URL = "http://127.0.0.1:8734/~inference@1.0"
 
 
 @pytest.fixture(scope="module")
@@ -75,7 +52,9 @@ def server_health_check(base_url):
     import urllib.request
     import urllib.error
     
-    health_url = f"{base_url}/health"
+    # Remove /v1 suffix for health check
+    base_server_url = base_url.replace("/v1", "")
+    health_url = f"{base_server_url}/health"
     max_retries = 10
     retry_delay = 2
     
@@ -102,7 +81,9 @@ class TestHealthEndpoint:
         """Test that health endpoint returns 200."""
         import urllib.request
         
-        health_url = f"{base_url}/health"
+        # Remove /v1 suffix for health check
+        base_server_url = base_url.replace("/v1", "")
+        health_url = f"{base_server_url}/health"
         response = urllib.request.urlopen(health_url, timeout=5)
         assert response.getcode() == 200
 
@@ -112,29 +93,15 @@ class TestCompletionsAPI:
     
     def test_basic_completion(self, openai_client, server_health_check):
         """Test basic text completion."""
-        # Log input
-        log_test_io("test_basic_completion", {
-            "model": "test-model",
-            "prompt": "Once upon a time",
-            "max_tokens": 50,
-            "temperature": 0.7
-        })
-        
+        log_test("basic_completion", "testing basic completion")
+
         response = openai_client.completions.create(
             model="test-model",
             prompt="Once upon a time",
             max_tokens=50,
             temperature=0.7
         )
-        
-        # Log output
-        log_test_io(None, None, {
-            "id": response.id,
-            "text": response.choices[0].text,
-            "finish_reason": response.choices[0].finish_reason,
-            "usage": response.usage
-        })
-        
+
         assert response.id is not None
         assert len(response.choices) > 0
         assert response.choices[0].text is not None
@@ -151,19 +118,11 @@ class TestCompletionsAPI:
         max_tokens = 200
         temperature = 0.0
         num_runs = 5
-        
-        # Log input
-        log_test_io("test_completion_deterministic", {
-            "model": "test-model",
-            "prompt": prompt,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "num_runs": num_runs
-        })
-        
+
+        log_test("completion_deterministic", f"running {num_runs} determinism tests")
+
         responses = []
         for i in range(num_runs):
-            logger.info(f"Run {i+1}/{num_runs}...")
             response = openai_client.completions.create(
                 model="test-model",
                 prompt=prompt,
@@ -171,20 +130,9 @@ class TestCompletionsAPI:
                 temperature=temperature
             )
             responses.append(response)
-            
-            # Log each response
-            logger.info(f"  text: {response.choices[0].text}")
-        
+
         # Extract all text outputs
         texts = [r.choices[0].text for r in responses]
-        
-        # Log output summary
-        log_test_io(None, None, {
-            "num_runs": num_runs,
-            "all_texts_identical": len(set(texts)) == 1,
-            "first_text": texts[0],
-            "unique_outputs": len(set(texts))
-        })
         
         # Verify all responses are identical
         assert len(set(texts)) == 1, f"Expected identical outputs, got {len(set(texts))} different outputs: {texts}"
@@ -198,36 +146,20 @@ class TestChatCompletionsAPI:
     
     def test_basic_chat_completion(self, openai_client, server_health_check):
         """Test basic chat completion."""
-        # Log input
+        log_test("basic_chat_completion", "testing basic chat completion")
+
         messages = [
             {"role": "system", "content": "You are a helpful assistant."},
             {"role": "user", "content": "Hello, how are you?"}
         ]
-        max_tokens = 50
-        temperature = 0.7
-        log_test_io("test_basic_chat_completion", {
-            "model": "test-model",
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature
-        })
-        
+
         response = openai_client.chat.completions.create(
             model="test-model",
             messages=messages,
-            max_tokens=max_tokens,
-            temperature=temperature
+            max_tokens=50,
+            temperature=0.7
         )
-        
-        # Log output
-        log_test_io(None, None, {
-            "id": response.id,
-            "message.role": response.choices[0].message.role,
-            "message.content": response.choices[0].message.content,
-            "finish_reason": response.choices[0].finish_reason,
-            "usage": response.usage
-        })
-        
+
         assert response.id is not None
         assert len(response.choices) > 0
         assert response.choices[0].message.content is not None
@@ -247,19 +179,11 @@ class TestChatCompletionsAPI:
         max_tokens = 200
         temperature = 0.0
         num_runs = 5
-        
-        # Log input
-        log_test_io("test_chat_completion_deterministic", {
-            "model": "test-model",
-            "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "num_runs": num_runs
-        })
-        
+
+        log_test("chat_completion_deterministic", f"running {num_runs} chat determinism tests")
+
         responses = []
         for i in range(num_runs):
-            logger.info(f"Run {i+1}/{num_runs}...")
             response = openai_client.chat.completions.create(
                 model="test-model",
                 messages=messages,
@@ -267,20 +191,9 @@ class TestChatCompletionsAPI:
                 temperature=temperature
             )
             responses.append(response)
-            
-            # Log each response
-            logger.info(f"  content: {response.choices[0].message.content}")
-        
+
         # Extract all message contents
         contents = [r.choices[0].message.content for r in responses]
-        
-        # Log output summary
-        log_test_io(None, None, {
-            "num_runs": num_runs,
-            "all_contents_identical": len(set(contents)) == 1,
-            "first_content": contents[0],
-            "unique_outputs": len(set(contents))
-        })
         
         # Verify all responses are identical
         assert len(set(contents)) == 1, f"Expected identical outputs, got {len(set(contents))} different outputs: {contents}"

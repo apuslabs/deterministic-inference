@@ -4,7 +4,7 @@ import argparse
 import sys
 from typing import Optional
 
-from deterministic_inference.config import Config
+from deterministic_inference.config import load_config
 from deterministic_inference.logging_config import setup_logging, get_logger
 from deterministic_inference.server import InferenceServer, setup_signal_handlers
 
@@ -22,7 +22,7 @@ Examples:
   deterministic-inference-server --model-path /path/to/model --debug
 
 Logs:
-  Auto-saved to ~/.cache/deterministic-inference/logs/ with rotation.
+  Output to console with structured formatting.
   
 Env Variables:
   INFERENCE_MODEL_PATH       Model path
@@ -64,34 +64,19 @@ def main(args: Optional[list] = None) -> int:
     """Main entry point."""
     try:
         parsed_args = parse_args(args)
-        
-        # Config priority: CLI args > Env vars > Defaults
-        base_config = Config.from_env()
-        
-        cli_kwargs = {
-            "model_path": parsed_args.model_path,
-            "backend_port": parsed_args.backend_port,
-            "proxy_port": parsed_args.port,
-            "backend_startup_timeout": parsed_args.timeout,
-            "log_level": "DEBUG" if parsed_args.debug else None,
-        }
-        
-        config = base_config.merge_with_args(**cli_kwargs)
-        
-        try:
-            config.validate()
-        except ValueError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            print("Use --help for usage information", file=sys.stderr)
-            return 1
-        
-        # Auto file logging with rotation
-        setup_logging(
-            level=config.log_level,
-            log_to_console=True,
-            enable_rotation=True,
+
+        # Load configuration from parameters and environment
+        config = load_config(
+            model_path=parsed_args.model_path,
+            port=parsed_args.port,
+            backend_port=parsed_args.backend_port,
+            timeout=parsed_args.timeout,
+            debug=parsed_args.debug
         )
-        
+
+        # Setup logging
+        setup_logging(level=config.log_level)
+
         logger = get_logger(__name__)
         logger.info("=" * 70)
         logger.info("Deterministic Inference Server")
@@ -100,7 +85,7 @@ def main(args: Optional[list] = None) -> int:
         logger.info(f"Server: http://127.0.0.1:{config.proxy_port}")
         logger.info(f"Backend: SGLang on port {config.backend_port}")
         logger.info("=" * 70)
-        
+
         server = InferenceServer(config)
         setup_signal_handlers(server)
         

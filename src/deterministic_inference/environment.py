@@ -1,77 +1,11 @@
 """Environment information collection utilities."""
 
-from __future__ import annotations
-
 import json
-from dataclasses import dataclass
-from typing import Any, Dict, List
+from typing import Dict, Any, List
 
 
 class EnvironmentCollectionError(RuntimeError):
     """Raised when environment information cannot be collected."""
-
-
-@dataclass(frozen=True)
-class GPUInfo:
-    """Details about a single GPU device."""
-
-    index: int
-    name: str
-    memory_total_bytes: int
-
-    @property
-    def memory_total_mebibytes(self) -> float:
-        """Total memory in MiB for convenience."""
-        return round(self.memory_total_bytes / (1024 ** 2), 2)
-
-
-@dataclass(frozen=True)
-class GPUEnvironment:
-    """GPU environment snapshot collected at server start."""
-
-    driver_version: str
-    cuda_version: str
-    gpu_count: int
-    gpus: List[GPUInfo]
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Serialise the GPU environment to a dict."""
-        return {
-            "driver_version": self.driver_version,
-            "cuda_version": self.cuda_version,
-            "gpu_count": self.gpu_count,
-            "gpus": [
-                {
-                    "index": gpu.index,
-                    "name": gpu.name,
-                    "memory_total_bytes": gpu.memory_total_bytes,
-                    "memory_total_mib": gpu.memory_total_mebibytes,
-                }
-                for gpu in self.gpus
-            ],
-        }
-
-    def to_json(self) -> str:
-        """Serialise the GPU environment as a JSON string."""
-        return json.dumps(self.to_dict(), separators=(",", ":"))
-
-
-def _load_nvml_module():
-    """Load the NVML module from nvidia-ml-py.
-
-    Returns:
-        The NVML module with required symbols.
-
-    Raises:
-        EnvironmentCollectionError: If the module cannot be imported.
-    """
-    try:
-        import pynvml as nvml
-    except ImportError as exc:  # pragma: no cover - import failure path
-        raise EnvironmentCollectionError(
-            "nvidia-ml-py is required to collect GPU information."
-        ) from exc
-    return nvml
 
 
 def _format_cuda_version(raw_version: int) -> str:
@@ -84,68 +18,79 @@ def _format_cuda_version(raw_version: int) -> str:
     return f"{major}.{minor}"
 
 
-def collect_gpu_environment() -> GPUEnvironment:
-    """Collect the GPU environment information using NVML.
-
-    Returns:
-        GPUEnvironment snapshot.
-
-    Raises:
-        EnvironmentCollectionError: If NVML initialisation or querying fails.
-    """
-    nvml = _load_nvml_module()
+def collect_gpu_environment() -> Dict[str, Any]:
+    """Collect GPU environment information and return as dictionary."""
+    try:
+        import pynvml as nvml
+    except ImportError as exc:
+        raise EnvironmentCollectionError(
+            "nvidia-ml-py is required to collect GPU information."
+        ) from exc
 
     try:
         nvml.nvmlInit()
-    except nvml.NVMLError as exc:  # type: ignore[attr-defined]
+    except Exception as exc:
         raise EnvironmentCollectionError(f"Failed to initialise NVML: {exc}") from exc
 
     try:
+        # Get driver version
         try:
-            driver_version = nvml.nvmlSystemGetDriverVersion().decode("utf-8")
-        except AttributeError:
-            driver_version = str(nvml.nvmlSystemGetDriverVersion())
+            driver_version = nvml.nvmlSystemGetDriverVersion()
+            if isinstance(driver_version, bytes):
+                driver_version = driver_version.decode("utf-8")
+        except Exception:
+            driver_version = "unknown"
 
+        # Get CUDA version
         try:
-            raw_cuda_version = nvml.nvmlSystemGetCudaDriverVersion_v2()
-        except AttributeError:
-            raw_cuda_version = nvml.nvmlSystemGetCudaDriverVersion()
-        cuda_version = _format_cuda_version(int(raw_cuda_version))
+            try:
+                raw_cuda_version = nvml.nvmlSystemGetCudaDriverVersion_v2()
+            except AttributeError:
+                raw_cuda_version = nvml.nvmlSystemGetCudaDriverVersion()
+            cuda_version = _format_cuda_version(int(raw_cuda_version))
+        except Exception:
+            cuda_version = "unknown"
 
+        # Get GPU count and info
         gpu_count = nvml.nvmlDeviceGetCount()
-        gpus: List[GPUInfo] = []
+        gpus: List[Dict[str, Any]] = []
 
         for index in range(gpu_count):
-            handle = nvml.nvmlDeviceGetHandleByIndex(index)
-            name = nvml.nvmlDeviceGetName(handle)
-            if isinstance(name, bytes):
-                name = name.decode("utf-8")
-            memory_info = nvml.nvmlDeviceGetMemoryInfo(handle)
-            gpus.append(
-                GPUInfo(
-                    index=index,
-                    name=name,
-                    memory_total_bytes=int(memory_info.total),
-                )
-            )
+            try:
+                handle = nvml.nvmlDeviceGetHandleByIndex(index)
+                name = nvml.nvmlDeviceGetName(handle)
+                if isinstance(name, bytes):
+                    name = name.decode("utf-8")
 
-        return GPUEnvironment(
-            driver_version=driver_version,
-            cuda_version=cuda_version,
-            gpu_count=gpu_count,
-            gpus=gpus,
-        )
-    except nvml.NVMLError as exc:  # type: ignore[attr-defined]
+                memory_info = nvml.nvmlDeviceGetMemoryInfo(handle)
+
+                gpus.append({
+                    "index": index,
+                    "name": name,
+                    "memory_total_bytes": int(memory_info.total),
+                    "memory_total_mib": round(int(memory_info.total) / (1024 ** 2), 2)
+                })
+            except Exception:
+                # Skip GPU if there's an error querying it
+                continue
+
+        return {
+            "driver_version": driver_version,
+            "cuda_version": cuda_version,
+            "gpu_count": gpu_count,
+            "gpus": gpus
+        }
+
+    except Exception as exc:
         raise EnvironmentCollectionError(f"Failed to query GPU information: {exc}") from exc
     finally:
         try:
             nvml.nvmlShutdown()
         except Exception:
-            # Do not mask earlier exceptions with shutdown errors
-            pass
+            pass  # Ignore shutdown errors
 
 
 def collect_gpu_environment_json() -> str:
     """Collect GPU environment information as a JSON string."""
     environment = collect_gpu_environment()
-    return environment.to_json()
+    return json.dumps(environment, separators=(",", ":"))
