@@ -53,8 +53,19 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
             content_length = int(self.headers.get('Content-Length', 0))
             post_data = self.rfile.read(content_length)
             
-            logger.debug(f"Proxying to backend: {self.path}")
-            logger.debug(f"Request body: {post_data.decode('utf-8', errors='replace')[:500]}")
+            is_streaming = False
+            try:
+                body_str = post_data.decode('utf-8', errors='ignore')
+                if '"stream": true' in body_str or '"stream":true' in body_str:
+                    body_json = json.loads(body_str)
+                    if isinstance(body_json, dict) and body_json.get("stream"):
+                        is_streaming = True
+            except Exception:
+                pass
+
+            logger.debug(f"Proxying to backend: {self.path} (streaming={is_streaming})")
+            if not is_streaming:
+                logger.debug(f"Request body: {post_data.decode('utf-8', errors='replace')[:500]}")
             
             # Prepare backend URL
             backend_url = f"{self.backend.get_base_url()}{self.path}"
@@ -70,16 +81,6 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
             with urllib.request.urlopen(req, timeout=300) as response:
                 status_code = response.getcode()
                 response_headers = response.headers
-                body = response.read()
-
-                # Inject environment metadata for completion endpoints
-                if self.environment_info and self.path.startswith("/v1/"):
-                    try:
-                        payload = json.loads(body.decode("utf-8"))
-                        payload["environment"] = self.environment_info
-                        body = json.dumps(payload).encode("utf-8")
-                    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                        logger.warning(f"Failed to inject environment: {exc}")
 
                 self.send_response(status_code)
 
@@ -89,9 +90,29 @@ class OpenAIProxyHandler(BaseHTTPRequestHandler):
                         continue
                     self.send_header(header, value)
 
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                if is_streaming:
+                    self.end_headers()
+                    while True:
+                        chunk = response.read(4096) # Read in chunks
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                else:
+                    body = response.read()
+
+                    # Inject environment metadata for completion endpoints
+                    if self.environment_info and self.path.startswith("/v1/"):
+                        try:
+                            payload = json.loads(body.decode("utf-8"))
+                            payload["environment"] = self.environment_info
+                            body = json.dumps(payload).encode("utf-8")
+                        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                            logger.warning(f"Failed to inject environment: {exc}")
+
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
 
                 logger.info(f"Successfully proxied request to {self.path}")
         

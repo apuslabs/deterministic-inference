@@ -54,7 +54,8 @@ class SGLangBackend(Backend):
                 "--port", str(self.port),
                 "--attention-backend", "fa3",
                 "--enable-deterministic-inference",
-                "--context-length", "32768"
+                "--context-length", "32768",
+                "--stream-output"
             ]
             
             logger.info(f"Starting SGLang: {self.model_path} on {self.host}:{self.port}")
